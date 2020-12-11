@@ -1,0 +1,502 @@
+---
+title: "EPE241: Religion and Politics"
+author: "Bradley Yam"
+date: "11/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(bit64)
+library(ropensecretsapi)
+library(anytime)
+library(fastDummies)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+RealCode <- c("J1110", "X7000", "J7120")
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+states <- c("Alabama","Alaska","Arizona","Arkansas","California","Colorado","Connecticut","Delaware","DistrictofColumbia","Florida","Georgia","Hawaii","Idaho","Illinois","Indiana","Iowa","Kansas","Kentucky","Louisiana","Maine","Maryland","Massachusetts","Michigan","Minnesota","Mississippi","Missouri","Montana","Nebraska","Nevada","NewHampshire","NewJersey","NewMexico","NewYork","NorthCarolina","NorthDakota","Ohio","Oklahoma","Oregon","Pennsylvania","RhodeIsland","SouthCarolina","SouthDakota","Tennessee","Texas","Utah","Vermont","Virginia","Washington","WestVirginia","Wisconsin","Wyoming")
+
+all_dat <- fread("indivs_Alabama18.csv")
+all_dat <- all_dat %>% filter(Recipid == 0) #clear all_dat
+
+for(i in 1:51) {
+  state_dat <- fread(paste("indivs_", states[i], "18.csv", sep = ""))
+  all_dat <- rbind(all_dat, state_dat)
+}
+
+all_dat <- fread("../data/CampaignFinances2018.csv")
+
+```
+
+```{r}
+relbycounty <- fread("../data/relcensus.csv")
+ziptocounty <- fread("../data/ZIP-COUNTY-FIPS_2010-09.csv") %>% select(ZIP, STCOUNTYFP) %>%
+  rename(Zip = ZIP, County = STCOUNTYFP) %>%
+  mutate(Zip = as.character(Zip))
+misconduct_dat <- fread("../data/misconduct-instances.csv")
+CRP_ID <- fread("../data/CRP_ID.csv")
+lmap <- fread("../data/legislators_current.csv")
+lmap_h <- fread("../data/legislators_historical.csv")
+misconduct_dat <- misconduct_dat %>% mutate(govtrack_id = person) %>%
+  select(-person)
+
+lmap <- lmap %>% select(bioguide_id, govtrack_id, opensecrets_id)
+lmap_h <- lmap_h %>% select(bioguide_id, govtrack_id, opensecrets_id)
+lmap_c <- rbind(lmap, lmap_h)
+
+mdat <- left_join(misconduct_dat, lmap_c, by = "govtrack_id")
+mdat$first_date <- as.Date(mdat$first_date)
+
+mdat <- mdat %>% filter(!is.na(opensecrets_id)) %>% 
+  filter(opensecrets_id != "") %>%
+  filter(first_date < as.Date("2019-01-01")) %>%
+  filter(first_date > as.Date("2016-01-01"))
+
+
+
+```
+
+```{r}
+evan_threshold <- quantile(relbycounty$EVANRATE[!is.na(relbycounty$EVANRATE)]/1000, c(0.9))
+
+main_threshold <- quantile(relbycounty$MPRTRATE[!is.na(relbycounty$MPRTRATE)]/1000, c(0.9))
+
+cath_threshold <- quantile(relbycounty$CATHRATE[!is.na(relbycounty$CATHRATE)]/1000, c(0.9))
+
+tot_threshold <- quantile(relbycounty$TOTRATE[!is.na(relbycounty$TOTRATE)], c(0.7))
+
+religious_counties <- relbycounty %>% filter(EVANRATE + CATHRATE + MPRTRATE + BPRTRATE + OTHRATE > tot_threshold) %>% select(FIPS)
+
+```
+
+```{r}
+all_dat <- all_dat %>% mutate(rel = ifelse(Realcode %in% RealCode, 1 , 0))
+all_dat <- left_join(all_dat, ziptocounty, by = "Zip")
+all_dat <- all_dat %>% mutate(rel = ifelse(County %in% religious_counties$FIPS, 1, rel))
+#all_dat <- all_dat %>% filter(Amount > 0) %>%
+#  mutate(lAmount = log(Amount))
+
+y <- unique(format(anydate(unique(sample$Date)), "%Y-%m"))
+y <- y[anydate(y) >= anydate("2016-12-31")]
+y <- y[!is.na(y)]
+y <- y[-c(30, 32, 33)]
+y <- y[1:24]
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+AlceeHastings <- c("N00002884", "Alcee Hastings", "2019-11-04")
+Meehan <- c("N00031134", "Patrick Meehan", "2018-01-18")
+Blum <- c("N00033744", "Rob Blum", "2018-07-18")
+Garrett <- c("N00038847", "Thomas Garrett", "2018-05-28")
+Renacci <- c("N00031127", "Jim Renacci", "2018-08-09")
+```
+
+```{r}
+
+get_group <- function(id, sample, floor, log) {
+    Group <- sample %>% filter(Recipid == id) %>%
+    mutate(date = anydate(Date)) %>% 
+    filter(Amount > floor) %>%
+    #filter(rel == 1) %>%
+    mutate(contrib = Amount) %>%
+    mutate(Amount = ifelse(log == 1, log(Amount), Amount))
+    
+    
+    return (Group)
+}
+
+make_plot <- function(id, name, scandal_date, sample) {
+
+    Group <- get_group(id, sample, 0, log = 0)
+    
+    plot<-ggplot(data=Group, aes(x=(date), y=contrib, group=rel,col=rel))+
+          geom_point()+xlab('Time')+ylab('Contributions(log)')+ theme_bw()+
+          theme(legend.title = element_blank(),legend.position="bottom",legend.text=element_text(size=12))+ggtitle(paste(name, "Contributions 2018")) + geom_smooth(method = "loess") + geom_vline(xintercept = as.numeric(as.Date(scandal_date, format="%Y-%m-%d")), linetype = 4, color = "black")
+    
+    return (plot)
+}
+
+```
+
+```{r}
+plots <- list()
+
+for(i in 1:nrow(mdat_selected)) {
+  plot <- make_plot(mdat_selected$opensecrets_id[i], mdat_selected$name[i], as.character(mdat_selected$first_date[i]), all_dat)
+  print(plot)
+  plots[[i]] <- plot
+}
+
+for(i in 1:nrow(mdat)) {
+  plot <- make_plot(mdat$opensecrets_id[i], mdat$name[i], as.character(mdat$first_date[i]), all_dat)
+  print(plot)
+  plots[[i]] <- plot
+}
+
+for(i in 1:nrow(mdat)){
+  print(get_group(mdat$opensecrets_id[i], test))
+}
+
+#for (i in :2) {
+#    ggsave(paste(gsub(' ', '',mdat$name[i]),".png",sep=""), plots[[i]], "png", "plots/")
+#}
+
+# want to regress on amount and probably also frequency.
+
+selected <- mdat$name[c(1, 2, 3, 4, 5, 7, 12, 14, 16)]
+mdat_selected <- mdat[mdat$name %in% selected,]
+
+for(i in 1:length(plots)) { print(plots[i])}
+```
+
+```{r}
+#DID Estimates
+
+get_did <- function(id, mdat, all_dat) {
+    plot <- make_plot(mdat$opensecrets_id[id], mdat$name[id], as.character(mdat$first_date[id]), all_dat)
+    print(plot)
+    
+    subset <- all_dat %>% filter(Recipid == mdat$opensecrets_id[id]) %>% mutate(datebin = format(anydate(Date), "%Y-%m"))
+    subset$after <- ifelse(anydate(subset$Date) > mdat$first_date[id], 1, 0)
+    subset$treated <- subset$after * subset$rel
+    subset <- subset %>% select(Amount, rel, after, treated, datebin)
+    
+    fit <- lm(Amount ~ ., data = subset)
+    
+    print(summary(fit))
+    
+    return (fit)
+}
+
+get_did_sum <- function(id, mdat, all_dat) {
+    #plot <- make_plot(mdat$opensecrets_id[id], mdat$name[id], as.character(mdat$first_date[id]), all_dat)
+    
+    subset <- all_dat %>% filter(Recipid == mdat$opensecrets_id[id]) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin, rel) %>% summarise(Amount = sum(Amount))
+    subset$after <- ifelse(anydate(subset$datebin) > mdat$first_date[id], 1, 0)
+    subset$treated <- subset$after * subset$rel
+    subset <- subset %>% select(Amount, rel, after, treated, datebin)
+    
+    plot <- ggplot(data=subset, aes(x=(anydate(datebin)), y=Amount, group=rel,col=rel))+
+          geom_point()+xlab('Time')+ylab('Contributions(log)')+ theme_bw()+
+          theme(legend.title = element_blank(),legend.position="bottom",legend.text=element_text(size=12))+ggtitle(paste(mdat$name[id], "Contributions 2018")) + geom_smooth(method = "loess") + geom_vline(xintercept = as.numeric(as.Date((format(anydate(mdat$first_date[1]), "%Y-%m-%d")))), linetype = 4, color = "black")
+    
+    print(plot)
+    
+    fit <- lm(Amount ~ ., data = subset)
+    
+    print(summary(fit))
+    
+    return (fit)
+}
+
+get_did_freq <- function(id, mdat, all_dat) {
+    #plot <- make_plot(mdat$opensecrets_id[id], mdat$name[id], as.character(mdat$first_date[id]), all_dat)
+    
+    subset <- all_dat %>% filter(Recipid == mdat$opensecrets_id[id]) %>% mutate(count = 1) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin, rel) %>% summarise(Amount = sum(count)) 
+    subset$after <- ifelse(anydate(subset$datebin) > mdat$first_date[id], 1, 0)
+    subset$treated <- subset$after * subset$rel
+    subset <- subset %>% select(Amount, rel, after, treated, datebin)
+    
+    plot <- ggplot(data=subset, aes(x=(anydate(datebin)), y=Amount, group=rel,col=rel))+
+          geom_point()+xlab('Time')+ylab('Contributions(log)')+ theme_bw()+
+          theme(legend.title = element_blank(),legend.position="bottom",legend.text=element_text(size=12))+ggtitle(paste(mdat$name[id], "Contributions 2018")) + geom_smooth(method = "loess") + geom_vline(xintercept = as.numeric(as.Date((format(anydate(mdat$first_date[1]), "%Y-%m-%d")))), linetype = 4, color = "black")
+    
+    print(plot)
+    
+    fit <- lm(Amount ~ ., data = subset)
+    
+    print(summary(fit))
+    
+    return (fit)
+}
+
+
+```
+
+```{r}
+#DID Estimates
+
+get_didc <- function(id, mdat, all_dat, controls) {
+    target <- mdat$opensecrets_id[id]
+    set <- c(target, controls)
+    subset <- all_dat %>% filter(Recipid %in% set) %>% mutate(datebin = format(anydate(Date), "%Y-%m"))
+    subset$after <- ifelse(anydate(subset$Date) > mdat$first_date[id], 1, 0)
+    subset$religious <- ifelse(subset$rel == 1 & subset$Recipid == target, 1, 0)
+    subset$treated <- subset$after * subset$religious
+    subset <- subset %>% select(Amount, rel, after, treated, datebin)
+    
+    fit <- lm(Amount ~ ., data = subset)
+    
+    print(summary(fit))
+    
+    return (fit)
+}
+
+get_did_sumc <- function(id, mdat, all_dat, controls) {
+    #plot <- make_plot(mdat$opensecrets_id[id], mdat$name[id], as.character(mdat$first_date[id]), all_dat)
+    target <- mdat$opensecrets_id[id]
+    set <- c(target, controls)
+    
+    subset <- all_dat %>% filter(Recipid %in% set) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin, rel, Recipid) %>% summarise(Amount = sum(Amount)) %>% filter(rel == 1)
+    subset$after <- ifelse(anydate(subset$datebin) > mdat$first_date[id], 1, 0)
+    subset$religious <- ifelse(subset$rel == 1 & subset$Recipid == target, 1, 0)
+    subset$treated <- subset$after * subset$religious
+    subset <- subset %>% select(Amount, religious, after, treated, datebin)
+    
+   plot <- ggplot(data=subset, aes(x=(anydate(datebin)), y=Amount, group=religious,col=religious))+
+          geom_point()+xlab('Time')+ylab('Contributions(log)')+ theme_bw()+
+          theme(legend.title = element_blank(),legend.position="bottom",legend.text=element_text(size=12))+ggtitle(paste(mdat$name[id], "Contributions 2018")) + geom_smooth(method = "loess") + geom_vline(xintercept = as.numeric(as.Date((format(anydate(mdat$first_date[id]), "%Y-%m-%d")))), linetype = 4, color = "black")
+    
+    print(plot)
+    
+    fit <- lm(Amount ~ ., data = subset)
+    
+    print(summary(fit))
+    
+    return (fit)
+}
+
+get_did_freqc <- function(id, mdat, all_dat, controls) {
+    #plot <- make_plot(mdat$opensecrets_id[id], mdat$name[id], as.character(mdat$first_date[id]), all_dat)
+  
+  target <- mdat$opensecrets_id[id]
+    set <- c(target, controls)
+    
+    subset <- all_dat %>% filter(Recipid %in% set) %>% mutate(count = 1) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin, rel, Recipid) %>% summarise(Amount = sum(count)) %>% filter(rel == 1)
+    subset$after <- ifelse(anydate(subset$datebin) > mdat$first_date[id], 1, 0)
+    subset$religious <- ifelse(subset$rel == 1 & subset$Recipid == target, 1, 0)
+    subset$treated <- subset$after * subset$religious
+    subset <- subset %>% select(Amount, religious, after, treated, datebin)
+    
+    plot <- ggplot(data=subset, aes(x=(anydate(datebin)), y=Amount, group=religious,col=religious))+
+          geom_point()+xlab('Time')+ylab('Contributions(log)')+ theme_bw()+
+          theme(legend.title = element_blank(),legend.position="bottom",legend.text=element_text(size=12))+ggtitle(paste(mdat$name[id], "Contributions 2018")) + geom_smooth(method = "loess") + geom_vline(xintercept = as.numeric(as.Date((format(anydate(mdat$first_date[id]), "%Y-%m-%d")))), linetype = 4, color = "black")
+    
+    print(plot)
+    
+    fit <- lm(Amount ~ ., data = subset)
+    
+    print(summary(fit))
+    
+    return (fit)
+}
+
+
+```
+
+
+```{r}
+results <- matrix(0, nrow = nrow(mdat), ncol = 3)
+results_selected <- matrix(0, nrow = nrow(mdat_selected), ncol = 3)
+
+for(i in 1:nrow(mdat_selected)) {
+  x <- get_did(i, mdat_selected, all_dat)
+  x2 <- summary(x)
+  y <- get_did_sum(i, mdat_selected, all_dat)
+  y2 <- summary(y)
+  z <- get_did_freq(i, mdat_selected, all_dat)
+  z2 <- summary(z)
+  
+  if(!is.na(x2$coefficients[16])) {
+     results_selected[i, 1] <- x2$coefficients[4,4] * sign(x2$coefficients[4,1])
+      results_selected[i, 2] <- y2$coefficients[4,4] * sign(y2$coefficients[4,1])
+      results_selected[i, 3] <- z2$coefficients[4,4] * sign(z2$coefficients[4,1])
+  }
+}
+```
+
+```{r}
+
+unique_ids <- unique(all_dat$Recipid)
+  #unique_ids <- unique_ids[unique_ids != mdat$opensecrets_id[16]]
+  unique_ids <- unique_ids[substring(unique_ids, 1, 1) != "C"]
+  unique_ids <- unique_ids[unique_ids != "None"]
+
+find_similar <- function(i, mdat, all_dat, unique_id, id, base) {
+  
+  if (nrow(all_dat %>% filter(Recipid == unique_id)) < 100) {return (0)}
+  return(get_comparison(unique_id, mdat, all_dat, mdat$first_date[i], base))
+
+}
+
+get_comparison <- function(id, mdat, all_dat, date, base) {
+  comp <- all_dat %>% filter(Recipid == id) %>% filter(anydate(Date) < date) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin) %>% summarise(Amount = sum(Amount))
+  basecomp <- full_join(comp, base, by="datebin")
+  basecomp <- basecomp[complete.cases(basecomp),]
+  return(cor(basecomp$Amount.x, basecomp$Amount.y))
+}
+```
+
+```{r}
+
+rob_correlations <- rep(0, length(unique_ids))
+rob_control <- unique_ids[1436]
+
+grijalva <- 1
+blum <- 2
+renacci <- 3
+nunes <- 7
+franken <- 14
+rob <- 16
+
+grijalva_correlations <- rep(0, length(unique_ids))
+blum_correlations <- rep(0, length(unique_ids))
+renacci_correlations <- rep(0, length(unique_ids))
+nunes_correlations <- rep(0, length(unique_ids))
+franken_correlations <- rep(0, length(unique_ids))
+rob_correlations <- rep(0, length(unique_ids))
+
+grijalva_count <- 0
+blum_count <- 0 
+renacci_count <- 0 
+nunes_count <- 0 
+franken_count <- 0
+rob_count <- 0
+
+i <- blum
+id <- mdat$opensecrets_id[i]
+base <- all_dat %>% filter(Recipid == mdat[i,]$opensecrets_id) %>% filter(rel == 1) %>% filter(anydate(Date) < mdat[i,]$first_date) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin) %>% summarise(Amount = sum(Amount))
+
+for (i in 391:length(unique_ids)) {
+  blum_correlations[i] <- find_similar(blum, mdat, all_dat, unique_ids[i], id, base)
+  print(i)
+  print(blum_correlations[i])
+  if (is.na(blum_correlations[i])) { next }
+  if (blum_correlations[i] > 0.95 && blum_correlations[i] < 0.98) { blum_count = blum_count + 1 }
+  if (blum_count > 10) { break }
+}
+
+blum_control <- unique_ids[order(blum_correlations, decreasing = T)[10]]
+
+i <- grijalva
+id <- mdat$opensecrets_id[i]
+base <- all_dat %>% filter(Recipid == mdat[i,]$opensecrets_id) %>% filter(rel == 1) %>% filter(anydate(Date) < mdat[i,]$first_date) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin) %>% summarise(Amount = sum(Amount))
+
+for (i in 1:length(unique_ids)) {
+  grijalva_correlations[i] <- find_similar(grijalva, mdat, all_dat, unique_ids[i], id, base)
+  print(i)
+  print(grijalva_correlations[i])
+  if (is.na(grijalva_correlations[i])) { next }
+  if (grijalva_correlations[i] > 0.95 && grijalva_correlations[i] < 0.98) { grijalva_count = grijalva_count + 1 }
+  if (grijalva_count > 10) { break }
+}
+
+i <- renacci
+id <- mdat$opensecrets_id[i]
+base <- all_dat %>% filter(Recipid == mdat[i,]$opensecrets_id) %>% filter(rel == 1) %>% filter(anydate(Date) < mdat[i,]$first_date) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin) %>% summarise(Amount = sum(Amount))
+
+for (i in 1:length(unique_ids)) {
+  renacci_correlations[i] <- find_similar(renacci, mdat, all_dat, unique_ids[i], id, base)
+  print(i)
+  print(renacci_correlations[i])
+  if (is.na(renacci_correlations[i])) { next }
+  if (renacci_correlations[i] > 0.95 && renacci_correlations[i] < 0.98) { renacci_count = renacci_count + 1 }
+  if (renacci_count > 10) { break }
+}
+
+i <- nunes
+id <- mdat$opensecrets_id[i]
+base <- all_dat %>% filter(Recipid == mdat[i,]$opensecrets_id) %>% filter(rel == 1) %>% filter(anydate(Date) < mdat[i,]$first_date) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin) %>% summarise(Amount = sum(Amount))
+
+for (i in 1:length(unique_ids)) {
+  nunes_correlations[i] <- find_similar(nunes, mdat, all_dat, unique_ids[i], id, base)
+  print(i)
+  print(nunes_correlations[i])
+  if (is.na(nunes_correlations[i])) { next }
+  if (nunes_correlations[i] > 0.95 && nunes_correlations[i] < 0.98) { nunes_count = nunes_count + 1 }
+  if (nunes_count > 10) { break }
+}
+
+i <- franken
+id <- mdat$opensecrets_id[i]
+base <- all_dat %>% filter(Recipid == mdat[i,]$opensecrets_id) %>% filter(rel == 1) %>% filter(anydate(Date) < mdat[i,]$first_date) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin) %>% summarise(Amount = sum(Amount))
+
+for (i in 1:length(unique_ids)) {
+  franken_correlations[i] <- find_similar(franken, mdat, all_dat, unique_ids[i], id, base)
+  print(i)
+  print(franken_correlations[i])
+  if (is.na(franken_correlations[i])) { next }
+  if (franken_correlations[i] > 0.95 && franken_correlations[i] < 0.98) { franken_count = franken_count + 1 }
+  if (franken_count > 10) { break }
+}
+
+
+i <- rob
+id <- mdat$opensecrets_id[i]
+base <- all_dat %>% filter(Recipid == mdat[i,]$opensecrets_id) %>% filter(rel == 1) %>% filter(anydate(Date) < mdat[i,]$first_date) %>% mutate(datebin = format(anydate(Date), "%Y-%m")) %>% group_by(datebin) %>% summarise(Amount = sum(Amount))
+
+for (i in 34:length(unique_ids)) {
+  rob_correlations[i] <- find_similar(rob, mdat, all_dat, unique_ids[i], id, base)
+  print(i)
+  print(rob_correlations[i])
+  if (is.na(rob_correlations[i])) { next }
+  if (rob_correlations[i] > 0.95 && rob_correlations[i] < 0.98) { rob_count = rob_count + 1 }
+  if (rob_count > 10) { break }
+}
+
+rob_control <- c("N00034547", "N00033395", "N00001024")
+blum_control <- c("N00003689", "N00031233")
+grijalva_control <- c("N00033539", "N00030770", "N00029285")
+nunes_control <- c("N00041929","N00041162") #AOC
+
+controls <- list(grijalva_control, blum_control, nunes_control, rob_control)
+```
+
+```{r}
+for (i in 37:60) {
+  p <- make_plot(unique_ids[order(franken_correlations, decreasing = T)[i]], paste(i), mdat$first_date[franken], all_dat)
+  print(p)
+}
+```
+
+```{r}
+
+j <- results_selected < 0.05
+k <- results_selected > -0.05
+res <- j * k
+res <- as_tibble(res)
+names(res) <- c("indiv_amt", "sum_amt", "freq")
+res <- res %>% add_column(names = mdat_selected$name)
+
+```
+
+       indiv_amt     sum_amt         freq            names
+Allegedly Drunk
+1   0.000000e+00 -0.01255086 -0.012254447    Raúl Grijalva(D) <- expected
+Financial Corruption
+2  -1.702766e-02 -0.03656895 -0.002748824         Rod Blum(R) <- expected
+Corruption
+3   0.000000e+00  0.00000000  0.000000000    James Renacci(R) <- Late entry
+Corruption, Improper Campaign Expenditure
+4   0.000000e+00  0.00000000  0.000000000 David Schweikert(R) <- lacks data
+Described guests as Illegal Aliens
+5   0.000000e+00  0.00000000  0.000000000       Paul Gosar(R) <- lacks data
+Receiving Campaign Contributions from Prohibited Entities
+6   2.744603e-02  0.00000000 -0.027509243      Devin Nunes(R) <- contrary effects
+Protested Outside the White House
+7   0.000000e+00  0.00000000  0.000000000         Judy Chu(D) <- lacks data
+Sexual Harrassment - big #MeToo
+8   0.000000e+00  0.01341318  0.014784000       Al Franken(D) <- consistency
+Corruption and Bribery
+9   1.272182e-05  0.00000000  0.000000000  Robert Menendez(D) <- opposite
+Unauthorized Disclosure of Classified Information
+10  3.307145e-07  0.00000000  0.000000000      Devin Nunes(R) <- no data before, clustering.
+
